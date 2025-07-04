@@ -5,7 +5,8 @@ import asyncio
 import requests
 from pathlib import Path
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+# --- CHANGE 1: IMPORT JobQueue DIRECTLY ---
+from telegram.ext import Application, CommandHandler, ContextTypes, JobQueue
 
 # --- Configuration & Logging (No changes) ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -20,7 +21,8 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# --- Data, API, and Formatting Functions (No changes) ---
+# --- All helper and command functions remain exactly the same ---
+# (I'm trimming them here for brevity, but you should paste the whole file)
 def load_data() -> dict:
     if not DATA_FILE.exists(): return {"chat_id": None, "domains": []}
     try:
@@ -62,14 +64,10 @@ def format_status_message(result: dict, domain_to_check: str) -> str:
     status_text = "is *BLOCKED*" if status == "BLOCKED" else "is *ALLOWED*"
     return f"{emoji} `{domain}` {status_text} (IP: `{ip}`)"
 
-# --- UPDATED Command Handlers ---
-
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Initializes the bot and shows the updated help text for multi-line pasting."""
     data = load_data()
     data["chat_id"] = update.effective_chat.id
     save_data(data)
-    
     welcome_text = (
         "👋 **Hello, everyone! The Indiwtf Domain Checker is now active in this group.**\n\n"
         "I will send periodic domain reports to this chat. Any member can manage the watchlist.\n\n"
@@ -86,31 +84,20 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(welcome_text, parse_mode='Markdown')
 
 def get_domains_from_message(text: str) -> list[str]:
-    """Extracts all domains from a command message, handling multi-line pastes."""
-    # Split the message into the command and the rest of the text
     parts = text.split(maxsplit=1)
-    if len(parts) < 2:
-        return [] # No arguments provided
-    
-    # The rest of the text contains all domains, separated by any whitespace (spaces, newlines, etc.)
-    # .split() with no arguments handles this perfectly.
+    if len(parts) < 2: return []
     return parts[1].split()
 
 async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Adds one or more domains from a single or multi-line message."""
     domains_to_process = get_domains_from_message(update.message.text)
-    
     if not domains_to_process:
         await update.message.reply_text("Usage: `/add domain1.com domain2.com ...`\nYou can also paste a list of domains on new lines after the command.")
         return
-
     data = load_data()
     current_domains = set(data.get("domains", []))
-    
     domains_to_add = {domain.lower() for domain in domains_to_process}
     newly_added = sorted(list(domains_to_add - current_domains))
     already_exist = sorted(list(domains_to_add & current_domains))
-    
     response_parts = ["**📝 Bulk Add Report**\n"]
     if newly_added:
         data["domains"].extend(newly_added)
@@ -118,24 +105,18 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         response_parts.append(f"✅ Added *{len(newly_added)}* new domains.")
     if already_exist:
         response_parts.append(f"☑️ Skipped *{len(already_exist)}* domains (already on list).")
-        
     await update.message.reply_text("\n".join(response_parts), parse_mode='Markdown')
 
 async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Removes one or more domains from a single or multi-line message."""
     domains_to_process = get_domains_from_message(update.message.text)
-
     if not domains_to_process:
         await update.message.reply_text("Usage: `/remove domain1.com domain2.com ...`\nYou can also paste a list of domains on new lines after the command.")
         return
-        
     data = load_data()
     current_domains = set(data.get("domains", []))
-    
     domains_to_remove = {domain.lower() for domain in domains_to_process}
     successfully_removed = sorted(list(domains_to_remove & current_domains))
     not_found = sorted(list(domains_to_remove - current_domains))
-    
     response_parts = ["**🗑️ Bulk Remove Report**\n"]
     if successfully_removed:
         data["domains"] = [d for d in data["domains"] if d not in successfully_removed]
@@ -143,10 +124,7 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         response_parts.append(f"✅ Removed *{len(successfully_removed)}* domains.")
     if not_found:
         response_parts.append(f"❓ Could not remove *{len(not_found)}* domains (not on list).")
-
     await update.message.reply_text("\n".join(response_parts), parse_mode='Markdown')
-
-# --- Unchanged Commands & Periodic Job ---
 
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     domains = load_data().get("domains", [])
@@ -161,7 +139,6 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not domains_to_check:
         await update.message.reply_text("Usage: `/check domain.com`")
         return
-    # Only check the first domain for the simple /check command
     domain_to_check = domains_to_check[0].lower()
     await update.message.reply_text(f"🔍 Checking `{domain_to_check}`...", parse_mode='Markdown')
     result = await check_domain_status(domain_to_check)
@@ -182,17 +159,32 @@ async def periodic_check(context: ContextTypes.DEFAULT_TYPE) -> None:
     await context.bot.send_message(chat_id=chat_id, text="\n".join(report_lines), parse_mode='Markdown')
     logger.info("Periodic report sent.")
 
+
 def main() -> None:
+    """Starts the bot."""
     if not TELEGRAM_TOKEN or not INDIWTF_TOKEN:
         logger.critical("Missing TELEGRAM_TOKEN or INDIWTF_TOKEN.")
         return
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # --- CHANGE 2: EXPLICITLY CREATE AND PASS THE JobQueue ---
+    job_queue = JobQueue()
+    application = (
+        Application.builder()
+        .token(TELEGRAM_TOKEN)
+        .job_queue(job_queue) # Pass the created job_queue here
+        .build()
+    )
+
+    # Add Handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("add", add_command))
     application.add_handler(CommandHandler("remove", remove_command))
     application.add_handler(CommandHandler("list", list_command))
     application.add_handler(CommandHandler("check", check_command))
+    
+    # Schedule the job (this now uses the guaranteed-to-exist job_queue)
     application.job_queue.run_repeating(periodic_check, interval=PERIODIC_CHECK_INTERVAL, first=10)
+
     logger.info("Bot is starting up...")
     application.run_polling()
 
