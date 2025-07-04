@@ -71,17 +71,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     save_data(data)
     
     welcome_text = (
-        "👋 **Welcome to the Indiwtf Domain Checker!**\n\n"
-        "I will now send periodic domain reports to this chat.\n\n"
+        "👋 **Hello, everyone! The Indiwtf Domain Checker is now active in this group.**\n\n"
+        "I will send periodic domain reports to this chat. Any member can manage the watchlist.\n\n"
         "**Commands:**\n"
         "`/add domain1.com domain2.net ...`\n"
-        "Adds one or more domains. You can separate domains with spaces or new lines (by copy-pasting a list).\n\n"
-        "Example of pasting a list:\n"
-        "```\n"
-        "/add domain1.com\n"
-        "domain2.com\n"
-        "domain3.com\n"
-        "```\n"
+        "Adds domains. You can also paste a list of domains on new lines after the command.\n\n"
         "`/remove domain1.com domain2.net ...`\n"
         "Removes one or more domains.\n\n"
         "`/list`\n"
