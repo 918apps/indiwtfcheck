@@ -5,7 +5,6 @@ import asyncio
 import requests
 from pathlib import Path
 from telegram import Update
-# --- CHANGE 1: IMPORT JobQueue DIRECTLY ---
 from telegram.ext import Application, CommandHandler, ContextTypes, JobQueue
 
 # --- Configuration & Logging (No changes) ---
@@ -21,8 +20,7 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# --- All helper and command functions remain exactly the same ---
-# (I'm trimming them here for brevity, but you should paste the whole file)
+# --- Data, API, and Formatting Functions (No changes) ---
 def load_data() -> dict:
     if not DATA_FILE.exists(): return {"chat_id": None, "domains": []}
     try:
@@ -64,34 +62,72 @@ def format_status_message(result: dict, domain_to_check: str) -> str:
     status_text = "is *BLOCKED*" if status == "BLOCKED" else "is *ALLOWED*"
     return f"{emoji} `{domain}` {status_text} (IP: `{ip}`)"
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    data = load_data()
-    data["chat_id"] = update.effective_chat.id
-    save_data(data)
-    welcome_text = (
-        "👋 **Hello, everyone! The Indiwtf Domain Checker is now active in this group.**\n\n"
-        "I will send periodic domain reports to this chat. Any member can manage the watchlist.\n\n"
-        "**Commands:**\n"
-        "`/add domain1.com domain2.net ...`\n"
-        "Adds domains. You can also paste a list of domains on new lines after the command.\n\n"
-        "`/remove domain1.com domain2.net ...`\n"
-        "Removes one or more domains.\n\n"
-        "`/list`\n"
-        "Shows all watched domains.\n\n"
-        "`/check domain.com`\n"
-        "Performs a single, one-time check."
-    )
-    await update.message.reply_text(welcome_text, parse_mode='Markdown')
-
 def get_domains_from_message(text: str) -> list[str]:
     parts = text.split(maxsplit=1)
     if len(parts) < 2: return []
     return parts[1].split()
 
+# --- Job/Check Function (No changes, but we will call this manually now) ---
+async def periodic_check(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The core function that checks all domains and sends a report."""
+    logger.info("Running domain check...")
+    data = load_data()
+    chat_id, domains = data.get("chat_id"), data.get("domains", [])
+    if not chat_id:
+        logger.warning("Check triggered but no chat_id is configured. Use /start.")
+        return
+    if not domains:
+        await context.bot.send_message(chat_id=chat_id, text="Watchlist is empty. Add domains with `/add`.")
+        return
+
+    report_lines = ["🔔 **Domain Status Report**\n"]
+    for domain in domains:
+        result = await check_domain_status(domain)
+        report_lines.append(format_status_message(result, domain))
+        await asyncio.sleep(1) # Small delay to avoid hammering the API
+    await context.bot.send_message(chat_id=chat_id, text="\n".join(report_lines), parse_mode='Markdown')
+    logger.info("Domain check finished and report sent.")
+
+
+# --- Command Handlers ---
+
+# --- CHANGE 1: ADD THE NEW /checknow COMMAND HANDLER ---
+async def check_now_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Manually triggers a check of all domains on the watchlist."""
+    await update.message.reply_text(
+        "🔍 On-demand check initiated. I will now check all domains on the watchlist..."
+    )
+    # We can directly call the existing periodic_check function! It's that simple.
+    await periodic_check(context)
+
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    data = load_data()
+    data["chat_id"] = update.effective_chat.id
+    save_data(data)
+    
+    # --- CHANGE 2: UPDATE THE WELCOME MESSAGE WITH THE NEW COMMAND ---
+    welcome_text = (
+        "👋 **Hello, everyone! The Indiwtf Domain Checker is now active in this group.**\n\n"
+        "I will send periodic domain reports to this chat. Any member can manage the watchlist.\n\n"
+        "**Commands:**\n"
+        "`/add domain1.com ...`\n"
+        "Adds one or more domains to the watchlist.\n\n"
+        "`/remove domain1.com ...`\n"
+        "Removes one or more domains.\n\n"
+        "`/list`\n"
+        "Shows all watched domains.\n\n"
+        "`/checknow`\n"
+        "Triggers an immediate check of all domains on the watchlist.\n\n"
+        "`/check domain.com`\n"
+        "Performs a single, one-time check for a specific domain."
+    )
+    await update.message.reply_text(welcome_text, parse_mode='Markdown')
+
 async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     domains_to_process = get_domains_from_message(update.message.text)
     if not domains_to_process:
-        await update.message.reply_text("Usage: `/add domain1.com domain2.com ...`\nYou can also paste a list of domains on new lines after the command.")
+        await update.message.reply_text("Usage: `/add domain1.com ...`\nYou can also paste a list of domains on new lines after the command.")
         return
     data = load_data()
     current_domains = set(data.get("domains", []))
@@ -110,7 +146,7 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     domains_to_process = get_domains_from_message(update.message.text)
     if not domains_to_process:
-        await update.message.reply_text("Usage: `/remove domain1.com domain2.com ...`\nYou can also paste a list of domains on new lines after the command.")
+        await update.message.reply_text("Usage: `/remove domain1.com ...`\nYou can also paste a list of domains on new lines after the command.")
         return
     data = load_data()
     current_domains = set(data.get("domains", []))
@@ -144,21 +180,6 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     result = await check_domain_status(domain_to_check)
     await update.message.reply_text(format_status_message(result, domain_to_check), parse_mode='Markdown')
 
-async def periodic_check(context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.info("Running periodic check...")
-    data = load_data()
-    chat_id, domains = data.get("chat_id"), data.get("domains", [])
-    if not chat_id or not domains:
-        logger.info("Skipping periodic check: no chat_id or domains configured.")
-        return
-    report_lines = ["🔔 **Periodic Domain Status Report**\n"]
-    for domain in domains:
-        result = await check_domain_status(domain)
-        report_lines.append(format_status_message(result, domain))
-        await asyncio.sleep(1)
-    await context.bot.send_message(chat_id=chat_id, text="\n".join(report_lines), parse_mode='Markdown')
-    logger.info("Periodic report sent.")
-
 
 def main() -> None:
     """Starts the bot."""
@@ -166,23 +187,23 @@ def main() -> None:
         logger.critical("Missing TELEGRAM_TOKEN or INDIWTF_TOKEN.")
         return
     
-    # --- CHANGE 2: EXPLICITLY CREATE AND PASS THE JobQueue ---
     job_queue = JobQueue()
     application = (
         Application.builder()
         .token(TELEGRAM_TOKEN)
-        .job_queue(job_queue) # Pass the created job_queue here
+        .job_queue(job_queue)
         .build()
     )
 
-    # Add Handlers
+    # --- CHANGE 3: REGISTER THE NEW COMMAND HANDLER ---
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("add", add_command))
     application.add_handler(CommandHandler("remove", remove_command))
     application.add_handler(CommandHandler("list", list_command))
     application.add_handler(CommandHandler("check", check_command))
+    application.add_handler(CommandHandler("checknow", check_now_command)) # Add this line
     
-    # Schedule the job (this now uses the guaranteed-to-exist job_queue)
+    # Schedule the job
     application.job_queue.run_repeating(periodic_check, interval=PERIODIC_CHECK_INTERVAL, first=10)
 
     logger.info("Bot is starting up...")
